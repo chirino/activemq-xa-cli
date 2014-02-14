@@ -81,7 +81,7 @@ public class Main {
 
         static String toString(Xid value) {
             StringBuilder rc = new StringBuilder();
-            rc.append(String.format("%04X", value.getFormatId()));
+            rc.append(String.format("%016X", value.getFormatId()));
             rc.append(":");
             rc.append(toString(value.getGlobalTransactionId()));
             rc.append(":");
@@ -97,6 +97,25 @@ public class Main {
             return rc.toString();
         }
 
+        public void run() {
+            XAConnection connection = null;
+            try {
+                connection = createConnection();
+                XASession xaSession = connection.createXASession();
+                XAResource xaResource = xaSession.getXAResource();
+                run(connection, xaSession, xaResource);
+            } catch (Exception e) {
+                println(e);
+            } finally {
+                verbose("Closing the connection");
+                try {
+                    connection.close();
+                } catch (JMSException e) {
+                }
+            }
+        }
+
+        abstract protected void run(XAConnection connection, XASession xaSession, XAResource xaResource) throws Exception;
     }
 
     @Command(name = "create", description = "Creates a prepared XA transaction")
@@ -104,58 +123,36 @@ public class Main {
         @Option(name = "-q", description = "Queue name, defaults to TEST")
         public String queue = "TEST";
 
-        public void run() {
-            try {
-                XAConnection connection = createConnection();
-                XASession xaSession = connection.createXASession();
-                XAResource xaResource = xaSession.getXAResource();
-                Xid xid = createXid();
+        @Override
+        protected void run(XAConnection connection, XASession xaSession, XAResource xaResource) throws Exception {
+            verbose("Starting XA transaction");
+            Xid xid = createXid();
+            xaResource.start(xid, 0);
 
-                verbose("Starting XA transaction");
-                xaResource.start(xid, 0);
+            verbose("Sending message");
+            MessageProducer producer = xaSession.createProducer(xaSession.createQueue(queue));
+            producer.send(xaSession.createTextMessage("TEST"));
 
-                verbose("Sending message");
-                MessageProducer producer = xaSession.createProducer(xaSession.createQueue(queue));
-                producer.send(xaSession.createTextMessage("TEST"));
+            verbose("Ending XA transaction");
+            xaResource.end(xid, XAResource.TMSUCCESS);
 
-                verbose("Ending XA transaction");
-                xaResource.end(xid, XAResource.TMSUCCESS);
+            verbose("Preparing XA transaction");
+            xaResource.prepare(xid);
 
-                verbose("Preparing XA transaction");
-                xaResource.prepare(xid);
-
-                println("Created: "+toString(xid));
-
-                verbose("Closing the connection");
-                connection.close();
-
-            } catch (Exception e) {
-                println(e);
-            }
+            println("Created: "+toString(xid));
         }
     }
 
     @Command(name = "list", description = "List transactions")
     public static class ListTransactions extends BaseCommand {
-        public void run() {
-            try {
-                XAConnection connection = createConnection();
-                verbose("Creating xa session");
-                XASession xaSession = connection.createXASession();
-                verbose("Creating xa resource");
-                XAResource xaResource = xaSession.getXAResource();
-                verbose("Getting prepared transactions");
-                Xid[] recover = xaResource.recover(0);
+        @Override
+        protected void run(XAConnection connection, XASession xaSession, XAResource xaResource) throws Exception {
+            verbose("Getting prepared transactions");
+            Xid[] recover = xaResource.recover(0);
 
-                println("Found " + recover.length + " prepared transactions");
-                for (Xid xid : recover) {
-                    println(toString(xid));
-                }
-
-                verbose("Closing the connection");
-                connection.close();
-            } catch (Exception e) {
-                println(e);
+            println("Found " + recover.length + " prepared transactions");
+            for (Xid xid : recover) {
+                println(toString(xid));
             }
         }
     }
@@ -166,37 +163,28 @@ public class Main {
         @Arguments(description = "Prepared transaction ids to commit")
         public List<String> ids;
 
-        public void run() {
-            try {
-                XAConnection connection = createConnection();
-                verbose("Creating xa session");
-                XASession xaSession = connection.createXASession();
-                verbose("Creating xa resource");
-                XAResource xaResource = xaSession.getXAResource();
-                verbose("Getting prepared transactions");
-                Xid[] recover = xaResource.recover(0);
 
-                HashSet<String> remaining = new HashSet<String>(ids);
-                for (Xid xid : recover) {
-                    String id = toString(xid);
-                    if( remaining.remove(id) ) {
-                        println("Committing: "+id);
-                        xaResource.commit(xid, false);
-                    }
+        @Override
+        protected void run(XAConnection connection, XASession xaSession, XAResource xaResource) throws Exception {
+            verbose("Getting prepared transactions");
+            Xid[] recover = xaResource.recover(0);
+
+            HashSet<String> remaining = new HashSet<String>(ids);
+            for (Xid xid : recover) {
+                String id = toString(xid);
+                if( remaining.remove(id) ) {
+                    println("Committing: "+id);
+                    xaResource.commit(xid, false);
                 }
+            }
 
-                if( !remaining.isEmpty() ) {
-                    for (String id : remaining) {
-                        println("Not found: "+id);
-                    }
+            if( !remaining.isEmpty() ) {
+                for (String id : remaining) {
+                    println("Not found: "+id);
                 }
-
-                verbose("Closing the connection");
-                connection.close();
-            } catch (Exception e) {
-                println(e);
             }
         }
+
     }
 
     @Command(name = "rollback", description = "Rollback a transaction")
@@ -205,35 +193,24 @@ public class Main {
         @Arguments(description = "Prepared transaction ids to rollback")
         public List<String> ids;
 
-        public void run() {
-            try {
-                XAConnection connection = createConnection();
-                verbose("Creating xa session");
-                XASession xaSession = connection.createXASession();
-                verbose("Creating xa resource");
-                XAResource xaResource = xaSession.getXAResource();
-                verbose("Getting prepared transactions");
-                Xid[] recover = xaResource.recover(0);
+        @Override
+        protected void run(XAConnection connection, XASession xaSession, XAResource xaResource) throws Exception {
+            verbose("Getting prepared transactions");
+            Xid[] recover = xaResource.recover(0);
 
-                HashSet<String> remaining = new HashSet<String>(ids);
-                for (Xid xid : recover) {
-                    String id = toString(xid);
-                    if( remaining.remove(id) ) {
-                        println("Rolling back: "+id);
-                        xaResource.rollback(xid);
-                    }
+            HashSet<String> remaining = new HashSet<String>(ids);
+            for (Xid xid : recover) {
+                String id = toString(xid);
+                if( remaining.remove(id) ) {
+                    println("Rolling back: "+id);
+                    xaResource.rollback(xid);
                 }
+            }
 
-                if( !remaining.isEmpty() ) {
-                    for (String id : remaining) {
-                        println("Not found: "+id);
-                    }
+            if( !remaining.isEmpty() ) {
+                for (String id : remaining) {
+                    println("Not found: "+id);
                 }
-
-                verbose("Closing the connection");
-                connection.close();
-            } catch (Exception e) {
-                println(e);
             }
         }
     }
